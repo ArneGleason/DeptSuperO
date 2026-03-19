@@ -152,6 +152,8 @@ type WorkstationRow = {
   targetNow: number;
   isTargetLocked: boolean;
   isShiftLocked: boolean;
+  timelineLeftPct: number;
+  timelineWidthPct: number;
 };
 
 function HelpEye({
@@ -591,6 +593,41 @@ export default function DepartmentSupervisorOverviewHiFi() {
   }, [cycleView, cycleVisibleDept, cycleFullDept, benchFactor, asOfIdx]);
 
   // ----------------------------
+  // Absolute Timeline scale
+  // ----------------------------
+  const timelineData = useMemo(() => {
+    const offsets = Array.from({ length: benchCount }).map((_, i) => {
+      const id = `ws-${i + 1}`;
+      const benchShift = overrideShifts[id] || { start: shiftStartTime, end: shiftEndTime };
+      const bH = parseTime(benchShift.start);
+      const eH = parseTime(benchShift.end);
+      let sOff = bH - shiftStartHour;
+      if (sOff < -12) sOff += 24;
+      if (sOff > 12) sOff -= 24;
+      let eOff = eH - shiftStartHour;
+      if (eOff < sOff) eOff += 24;
+      return { sOff, eOff };
+    });
+    const minOffset = Math.min(...offsets.map((o) => o.sOff), 0);
+    const maxOffset = Math.max(...offsets.map((o) => o.eOff), shiftHours);
+    const spanHours = Math.max(1, maxOffset - minOffset);
+
+    const reportOff = ((asOfIdx + 1) * intervalMinutes) / 60;
+    const reportLinePct = clamp(((reportOff - minOffset) / spanHours) * 100, 0, 100);
+
+    return { minOffset, spanHours, reportLinePct };
+  }, [
+    benchCount,
+    overrideShifts,
+    shiftStartTime,
+    shiftEndTime,
+    shiftStartHour,
+    shiftHours,
+    asOfIdx,
+    intervalMinutes,
+  ]);
+
+  // ----------------------------
   // Workstations (table)
   // ----------------------------
   const workstations = useMemo<WorkstationRow[]>(() => {
@@ -628,7 +665,15 @@ export default function DepartmentSupervisorOverviewHiFi() {
       const benchShift = overrideShifts[id] || { start: shiftStartTime, end: shiftEndTime };
       const bStartH = parseTime(benchShift.start);
       const bEndH = parseTime(benchShift.end);
-      const bShiftHours = bEndH > bStartH ? bEndH - bStartH : 24 - bStartH + bEndH;
+
+      let startOffset = bStartH - shiftStartHour;
+      if (startOffset < -12) startOffset += 24;
+      if (startOffset > 12) startOffset -= 24;
+      
+      let endOffset = bEndH - shiftStartHour;
+      if (endOffset < startOffset) endOffset += 24;
+
+      const bShiftHours = endOffset - startOffset;
       const bTotalMinutes = Math.round(bShiftHours * 60);
 
       return { 
@@ -642,6 +687,8 @@ export default function DepartmentSupervisorOverviewHiFi() {
         bTotalMinutes, 
         bShiftHours,
         benchShift,
+        startOffset,
+        endOffset,
         isTargetLocked: overrideTargets[id] !== undefined, 
         isShiftLocked: overrideShifts[id] !== undefined 
       };
@@ -670,6 +717,9 @@ export default function DepartmentSupervisorOverviewHiFi() {
       const targetRateHr = targetOut / Math.max(0.1, b.bShiftHours);
       const rate = bElapsedMin > 0 && bElapsedMin <= b.bTotalMinutes + intervalMinutes ? targetRateHr * b.perf * wobble : 0;
 
+      const timelineLeftPct = clamp(((b.startOffset - timelineData.minOffset) / timelineData.spanHours) * 100, 0, 100);
+      const timelineWidthPct = clamp(((b.endOffset - b.startOffset) / timelineData.spanHours) * 100, 0, 100);
+
       return {
         id: b.id,
         name: `Bench ${idx + 1}`,
@@ -684,7 +734,9 @@ export default function DepartmentSupervisorOverviewHiFi() {
         bPlanFrac,
         targetNow,
         isTargetLocked: b.isTargetLocked,
-        isShiftLocked: b.isShiftLocked
+        isShiftLocked: b.isShiftLocked,
+        timelineLeftPct,
+        timelineWidthPct,
       };
     });
   }, [
@@ -1096,7 +1148,35 @@ export default function DepartmentSupervisorOverviewHiFi() {
                     <TableHead className="text-right">Cycle (Avg/Slow)</TableHead>
                     <TableHead className="text-right">WIP</TableHead>
                     <TableHead className="text-right">Blocked</TableHead>
-                    <TableHead className="w-[260px]">Progress</TableHead>
+                    <TableHead className="w-[300px] h-12 pt-2 align-top">
+                      <div className="flex h-full w-full flex-col gap-1 relative">
+                        <div className="flex items-center justify-between text-xs font-semibold">
+                          <span>Progress (Time Scale)</span>
+                        </div>
+                        {/* Timeline Ruler */}
+                        <div className="relative mt-auto h-4 w-full border-b border-muted-foreground/20">
+                          {Array.from({ length: Math.ceil(timelineData.spanHours) + 1 }).map((_, i) => {
+                            const tickHourOffset = timelineData.minOffset + i;
+                            const pct = clamp((i / timelineData.spanHours) * 100, 0, 100);
+                            const hour24 = Math.floor(shiftStartHour + tickHourOffset);
+                            const m = ((hour24 % 24) + 24) % 24;
+                            const h12 = ((m + 11) % 12) + 1;
+                            const ampm = m >= 12 ? 'p' : 'a';
+                            
+                            return (
+                              <div
+                                key={i}
+                                className="absolute bottom-0 flex -translate-x-1/2 flex-col items-center whitespace-nowrap text-[9px] text-muted-foreground"
+                                style={{ left: `${pct}%` }}
+                              >
+                                <span>{h12}{ampm}</span>
+                                <div className="mt-0.5 h-1 w-[1px] bg-muted-foreground/30" />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1108,7 +1188,6 @@ export default function DepartmentSupervisorOverviewHiFi() {
                     const progressPct = clamp((w.out / Math.max(1, w.targetOut)) * 100, 0, 140);
 
                     const targetNow = w.targetNow;
-                    const planFrac = w.bPlanFrac;
 
                     return (
                       <TableRow key={w.id} className="group hover:bg-muted/50">
@@ -1160,19 +1239,24 @@ export default function DepartmentSupervisorOverviewHiFi() {
                         <TableCell className={cn("text-right", w.blocked >= 4 ? "text-destructive" : "")}>
                           {w.blocked}
                         </TableCell>
-                        <TableCell>
+                        <TableCell className="align-top pt-3 pb-2">
                           <div className="space-y-1">
-                            {/* Progress bar with plan-to-time marker */}
-                            <div className="relative w-full">
-                              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                            {/* Absolute Timeline Progress bar with plan-to-time marker */}
+                            <div className="relative w-full h-5 rounded overflow-hidden bg-muted/30">
+                              {/* Background representing the workstation's shift bounds */}
+                              <div
+                                className="absolute top-0 bottom-0 bg-muted/60 rounded overflow-hidden shadow-inner flex"
+                                style={{ left: `${w.timelineLeftPct}%`, width: `${w.timelineWidthPct}%` }}
+                              >
                                 <div
                                   className="h-full bg-primary"
                                   style={{ width: `${clamp(progressPct, 0, 100)}%` }}
                                 />
                               </div>
+                              {/* Absolute current-time marker */}
                               <div
-                                className="absolute -bottom-[3px] top-0 w-[2px] bg-emerald-500/90 shadow-[0_0_0_2px_rgba(255,255,255,0.95)]"
-                                style={{ left: `${clamp(planFrac * 100, 0, 100)}%` }}
+                                className="absolute -bottom-[3px] top-0 w-[2px] bg-emerald-500 shadow-[0_0_0_1px_rgba(255,255,255,0.8)] z-10"
+                                style={{ left: `${timelineData.reportLinePct}%` }}
                               />
                             </div>
                             <div className="flex items-center justify-between text-xs text-muted-foreground">
